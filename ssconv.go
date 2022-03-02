@@ -2,7 +2,10 @@ package ssconv
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"reflect"
+	"strings"
 )
 
 type LocalRule struct {
@@ -83,13 +86,14 @@ func newConv(srcType, dstType reflect.Type, options Options, list ParamList) con
 	case reflect.Ptr:
 		return newPtrConverter(srcType, dstType, options, list)
 	case reflect.Map:
-		fallthrough
+		return newMapConverter(srcType, dstType, options, list)
 	case reflect.Slice:
-		fallthrough
+		return newSliceConverter(srcType, dstType, options, list)
 	case reflect.Interface:
-		fallthrough
+		return UnexpectedTypeConverter
 	case reflect.Struct:
-		fallthrough
+		return newStructConverter(srcType, dstType, options, list)
+
 	case reflect.Func:
 		fallthrough
 
@@ -152,4 +156,254 @@ func newPtrConverter(srcType reflect.Type, dstType reflect.Type, options Options
 			dst.Set(src)
 		}
 	}
+
+}
+
+type field struct {
+	name  string
+	alias string
+	tp    reflect.Type
+
+	ignoreEmpty bool
+	param       bool
+
+	index     []int
+	converter convFunc
+}
+
+type structField struct {
+	List      []field
+	NameIndex map[string][]int //use alias to index
+}
+
+type pairStructField struct {
+	srcStruct structField
+	dstStruct structField
+}
+
+type tagOptions []string
+
+func parseTag(tag string) (name string, opts tagOptions) {
+	res := strings.Split(tag, ",")
+	if len(res) == 0 {
+		return "", tagOptions{}
+	} else if len(res) == 1 {
+		return res[0], tagOptions{}
+	}
+	return res[0], res[1:]
+}
+
+func extractStructFieldFields(t reflect.Type, options Options) structField {
+	//extract fields and anonymous struct fields(they are treated as same level)
+	//at the time,any conv on unexported field is not supported
+
+	current := []field{}
+	nxt := []field{{tp: t}}
+
+	fields := []field{}
+	for len(nxt) > 0 {
+		current, nxt = nxt, current[:0]
+		for _, now := range current {
+			for i := 0; i < now.tp.NumField(); i++ {
+
+				ts := now.tp.Field(i)
+				tft := ts.Type
+				isUnexported := ts.PkgPath != ""
+
+				//fmt.Fprintln(os.Stderr, "->>",ts.Name,ts.Anonymous)
+				if isUnexported {
+					if !(ts.Anonymous && tft.Kind() == reflect.Struct) {
+						continue
+					}
+				}
+
+				index := make([]int, len(now.index)+1)
+				copy(index, now.index)
+				index[len(now.index)] = i
+				if !(tft.Kind() == reflect.Struct && ts.Anonymous) {
+					tag := ts.Tag.Get("ssconv")
+
+					alias, opts := parseTag(tag)
+
+					if alias == "" {
+						alias = ts.Name
+					}
+
+					var ignoreEmpty bool
+					var param bool
+
+					for _, opt := range opts {
+						switch opt {
+						case "ignoreEmpty":
+							ignoreEmpty = true
+						case "param":
+							param = true
+						}
+					}
+
+					f := field{
+						name:        ts.Name,
+						alias:       alias,
+						tp:          ts.Type,
+						ignoreEmpty: ignoreEmpty,
+						param:       param,
+						index:       index,
+					}
+					fields = append(fields, f)
+					continue
+				}
+				nxt = append(nxt, field{name: ts.Name, index: index, tp: tft})
+			}
+		}
+	}
+
+	//converter of returned field is empty
+
+	nameIndex := make(map[string][]int, len(fields))
+	for i := range fields {
+		f := &fields[i]
+		nameIndex[f.name] = append(nameIndex[f.name], i)
+		//fmt.Fprintln(os.Stderr, "->>",f.name,f.tp)
+	}
+	return structField{List: fields, NameIndex: nameIndex}
+}
+
+func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, options Options) (p pairStructField) {
+	if srcType.Kind() != reflect.Struct {
+		convPanic(ErrDstStructSrcNotStruct)
+	}
+
+	//options should be divided
+	p.srcStruct = extractStructFieldFields(srcType, options)
+	p.dstStruct = extractStructFieldFields(dstType, options)
+	// cache  the field later
+
+	for i := 0; i < len(p.dstStruct.List); i++ {
+		f := &p.dstStruct.List[i]
+
+		index, exist := p.srcStruct.NameIndex[f.name]
+		if !exist {
+			panic("field not exists")
+		}
+		if len(index) > 1 {
+			panic("ambiguous field")
+		}
+		//fmt.Fprintln(os.Stderr, "->>",p.srcStruct.List[index[0]].name,f.name)
+	}
+	return p
+}
+
+type structConverter struct {
+	pairStructField
+}
+
+func newStructConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+	pair := extractPairStructFieldFields(srcType, dstType, options)
+
+	structConv := structConverter{pairStructField: pair}
+	return structConv.conv
+}
+
+func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+	for i := 0; i < len(s.dstStruct.List); i++ {
+		df := &s.dstStruct.List[i]
+		dv := dst
+		sIndex := s.srcStruct.NameIndex[df.name]
+		sf := &s.srcStruct.List[sIndex[0]]
+		sv := src
+
+		for _, j := range df.index {
+			dv = dv.Field(j)
+		}
+
+		for _, j := range sf.index {
+			sv = sv.Field(j)
+		}
+		//fmt.Fprintln(os.Stderr, "->>",sv, dv)
+
+		newConv(sv.Type(), dv.Type(), options, list)(c, sv, dv, options, list)
+	}
+}
+
+type mapConverter struct {
+	elemFunc convFunc
+}
+
+func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+	if srcType.Kind() != reflect.Map {
+		panic("src not map")
+	}
+	srcKey := srcType.Key()
+	dstKey := dstType.Key()
+
+	//map key must be the same
+	if srcKey != dstKey {
+		panic("different map key type")
+	}
+
+	srcElem := srcType.Elem()
+	dstElem := dstType.Elem()
+
+	var elemFunc convFunc
+	if srcType != dstType {
+		elemFunc = newConv(srcElem, dstElem, options, list)
+	}
+	mapConv := mapConverter{elemFunc: elemFunc}
+	return mapConv.conv
+}
+
+func (m *mapConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+
+	if options.DeepCopy {
+		dstKey := dst.Type().Key()
+		dstElem := dst.Type().Elem()
+		dstMap := reflect.MapOf(dstKey, dstElem)
+		dst.Set(reflect.MakeMapWithSize(dstMap, len(src.MapKeys())))
+		fmt.Fprintln(os.Stderr, "->>", src.MapKeys())
+		for _, k := range src.MapKeys() {
+			fmt.Fprintln(os.Stderr, "->>", k, src.MapIndex(k), dstElem)
+
+			//map element is unaddressable
+			//here we converter src to tmp value then to dst value
+			if m.elemFunc == nil {
+				dst.SetMapIndex(k, src.MapIndex(k))
+			} else {
+				tmpValue := reflect.New(dstElem)
+				m.elemFunc(c, src.MapIndex(k), tmpValue, options, list)
+				dst.SetMapIndex(k, tmpValue)
+			}
+		}
+	} else {
+		dst.Set(src)
+	}
+}
+
+type sliceConverter struct {
+	elemFunc convFunc
+}
+
+func (s *sliceConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+	if options.DeepCopy {
+		srcElem := src.Type().Elem()
+		elemSlice := reflect.SliceOf(srcElem)
+		dst.Set(reflect.MakeSlice(elemSlice, src.Len(), src.Len()))
+		//fmt.Fprintln(os.Stderr, "->>",src.Len())
+		for i := 0; i < src.Len(); i++ {
+			s.elemFunc(c, src.Index(i), dst.Index(i), options, list)
+		}
+	} else {
+		dst.Set(src)
+	}
+}
+
+func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+	if srcType.Kind() != reflect.Slice && srcType.Kind() != reflect.Array {
+		panic("src not slice nor array")
+	}
+
+	srcElem := srcType.Elem()
+	dstElem := dstType.Elem()
+
+	sliceConv := sliceConverter{elemFunc: newConv(srcElem, dstElem, options, list)}
+	return sliceConv.conv
 }

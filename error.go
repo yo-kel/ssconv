@@ -7,7 +7,9 @@ import (
 )
 
 var (
-	ErrDstTypeNotReference = errors.New("dst is supposed to be pointer,map or slice")
+	ErrDstTypeNotReference   = errors.New("dst is supposed to be pointer,map or slice")
+	ErrDstStructSrcNotStruct = errors.New("dst is struct while src is not")
+	ErrDuplicateField        = errors.New("duplicate field")
 )
 
 const (
