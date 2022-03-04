@@ -43,7 +43,7 @@ type ParamList struct {
 type convState struct {
 }
 
-type convFunc func(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList)
+type convFunc func(c *convState, src reflect.Value, dst reflect.Value, list ParamList)
 
 func Conv(src interface{}, dst interface{}, options Options, list ParamList) (err error) {
 	defer func() {
@@ -69,11 +69,11 @@ func Conv(src interface{}, dst interface{}, options Options, list ParamList) (er
 	//fmt.Fprint()
 
 	c := new(convState)
-	newConv(srcType, dstType, options, list)(c, srcValue, dstValue, options, list)
+	newConv(srcType, dstType, options)(c, srcValue, dstValue, list)
 	return nil
 }
 
-func newConv(srcType, dstType reflect.Type, options Options, list ParamList) convFunc {
+func newConv(srcType, dstType reflect.Type, options Options) convFunc {
 
 	/*if dstType.Kind() != reflect.Ptr && dstType.Kind() != reflect.Map && dstType.Kind() != reflect.Slice {
 		panic(ErrDstTypeNotReference)
@@ -99,15 +99,15 @@ func newConv(srcType, dstType reflect.Type, options Options, list ParamList) con
 		return basicConverter
 
 	case reflect.Ptr:
-		return newPtrConverter(srcType, dstType, options, list)
+		return newPtrConverter(srcType, dstType, options)
 	case reflect.Map:
-		return newMapConverter(srcType, dstType, options, list)
+		return newMapConverter(srcType, dstType, options)
 	case reflect.Slice:
-		return newSliceConverter(srcType, dstType, options, list)
+		return newSliceConverter(srcType, dstType, options)
 	case reflect.Interface:
 		return UnexpectedTypeConverter
 	case reflect.Struct:
-		return newStructConverter(srcType, dstType, options, list)
+		return newStructConverter(srcType, dstType, options)
 
 	case reflect.Func:
 		fallthrough
@@ -129,11 +129,11 @@ func convPanic(err error) {
 	panic(ConvErr{Err: err})
 }
 
-func UnexpectedTypeConverter(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+func UnexpectedTypeConverter(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 	convPanic(&ErrUnexpectedType{dst.Type()})
 }
 
-func basicConverter(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+func basicConverter(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 	//
 
 	if src.Kind() == reflect.Ptr && src.IsNil() {
@@ -150,24 +150,24 @@ type PtrConverter struct {
 	elemEnc convFunc
 }
 
-func (pc *PtrConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+func (pc *PtrConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 	//detect circle
 	//fmt.Fprintln(os.Stderr,"->>",src.Type(),src)
 
 	if dst.IsNil() {
 		dst.Set(reflect.New(dst.Type().Elem()))
 	}
-	pc.elemEnc(c, src.Elem(), dst.Elem(), options, list)
+	pc.elemEnc(c, src.Elem(), dst.Elem(), list)
 	//when deepcopy is true
 }
 
-func newPtrConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+func newPtrConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
 	pc := new(PtrConverter)
 	if options.DeepCopy {
-		pc.elemEnc = newConv(srcType.Elem(), dstType.Elem(), options, list)
+		pc.elemEnc = newConv(srcType.Elem(), dstType.Elem(), options)
 		return pc.conv
 	} else {
-		return func(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+		return func(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 			dst.Set(src)
 		}
 	}
@@ -333,16 +333,17 @@ func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, op
 
 type structConverter struct {
 	pairStructField
+	options Options
 }
 
-func newStructConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+func newStructConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
 	pair := extractPairStructFieldFields(srcType, dstType, options)
 
-	structConv := structConverter{pairStructField: pair}
+	structConv := structConverter{pairStructField: pair, options: options}
 	return structConv.conv
 }
 
-func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
+func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 	for i := 0; i < len(s.dstStruct.List); i++ {
 		df := &s.dstStruct.List[i]
 		dv := dst
@@ -359,7 +360,8 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 		}
 		//fmt.Fprintln(os.Stderr, "->>",sv, dv)
 
-		newConv(sv.Type(), dv.Type(), options, list)(c, sv, dv, options, list)
+		//todo no
+		newConv(sv.Type(), dv.Type(), s.options)(c, sv, dv, list)
 	}
 }
 
@@ -367,7 +369,7 @@ type mapConverter struct {
 	elemFunc convFunc
 }
 
-func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
 	if srcType.Kind() != reflect.Map {
 		panic("src not map")
 	}
@@ -384,15 +386,16 @@ func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options
 
 	var elemFunc convFunc
 	if srcType != dstType {
-		elemFunc = newConv(srcElem, dstElem, options, list)
+		elemFunc = newConv(srcElem, dstElem, options)
 	}
 	mapConv := mapConverter{elemFunc: elemFunc}
 	return mapConv.conv
 }
 
-func (m *mapConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
-
-	if options.DeepCopy {
+func (m *mapConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
+	//todo deep copying setting
+	var deepcopy bool
+	if deepcopy {
 		dstKey := dst.Type().Key()
 		dstElem := dst.Type().Elem()
 		dstMap := reflect.MapOf(dstKey, dstElem)
@@ -407,7 +410,7 @@ func (m *mapConverter) conv(c *convState, src reflect.Value, dst reflect.Value, 
 				dst.SetMapIndex(k, src.MapIndex(k))
 			} else {
 				tmpValue := reflect.New(dstElem)
-				m.elemFunc(c, src.MapIndex(k), tmpValue, options, list)
+				m.elemFunc(c, src.MapIndex(k), tmpValue, list)
 				dst.SetMapIndex(k, tmpValue)
 			}
 		}
@@ -420,21 +423,23 @@ type sliceConverter struct {
 	elemFunc convFunc
 }
 
-func (s *sliceConverter) conv(c *convState, src reflect.Value, dst reflect.Value, options Options, list ParamList) {
-	if options.DeepCopy {
+func (s *sliceConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
+	//todo deep copying setting
+	var deepcopy bool
+	if deepcopy {
 		srcElem := src.Type().Elem()
 		elemSlice := reflect.SliceOf(srcElem)
 		dst.Set(reflect.MakeSlice(elemSlice, src.Len(), src.Len()))
 		//fmt.Fprintln(os.Stderr, "->>",src.Len())
 		for i := 0; i < src.Len(); i++ {
-			s.elemFunc(c, src.Index(i), dst.Index(i), options, list)
+			s.elemFunc(c, src.Index(i), dst.Index(i), list)
 		}
 	} else {
 		dst.Set(src)
 	}
 }
 
-func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options Options, list ParamList) convFunc {
+func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
 	if srcType.Kind() != reflect.Slice && srcType.Kind() != reflect.Array {
 		panic("src not slice nor array")
 	}
@@ -442,6 +447,6 @@ func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options Optio
 	srcElem := srcType.Elem()
 	dstElem := dstType.Elem()
 
-	sliceConv := sliceConverter{elemFunc: newConv(srcElem, dstElem, options, list)}
+	sliceConv := sliceConverter{elemFunc: newConv(srcElem, dstElem, options)}
 	return sliceConv.conv
 }
