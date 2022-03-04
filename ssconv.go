@@ -3,9 +3,11 @@ package ssconv
 import (
 	"errors"
 	"fmt"
+	"github.com/mitchellh/hashstructure/v2"
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 type LocalRule struct {
@@ -13,8 +15,21 @@ type LocalRule struct {
 
 type Options struct {
 	DeepCopy   bool
-	localRules []LocalRule
-	hashCode   string
+	LocalRules []LocalRule
+	hashCode   uint64
+}
+
+func (op *Options) hash() uint64 {
+	if op.hashCode != 0 {
+		return op.hashCode
+	}
+	var x int
+	hashCode, err := hashstructure.Hash(x, hashstructure.FormatV2, nil)
+	if err != nil {
+		panic(err)
+	}
+	op.hashCode = hashCode
+	return op.hashCode
 }
 
 func (op *Options) SetDeepCode(deepCopy bool) *Options {
@@ -193,6 +208,29 @@ func parseTag(tag string) (name string, opts tagOptions) {
 	return res[0], res[1:]
 }
 
+type structFieldCacheKey struct {
+	t        reflect.Type
+	hashcode uint64
+}
+
+var structFieldCache sync.Map
+
+func genStructFieldCacheKey(t reflect.Type, options Options) structFieldCacheKey {
+	return structFieldCacheKey{
+		t:        t,
+		hashcode: options.hash(),
+	}
+}
+
+func cachedStructField(t reflect.Type, options Options) structField {
+	key := genStructFieldCacheKey(t, options)
+	if f, ok := structFieldCache.Load(key); ok {
+		return f.(structField)
+	}
+	f, _ := structFieldCache.LoadOrStore(key, extractStructFieldFields(t, options))
+	return f.(structField)
+}
+
 func extractStructFieldFields(t reflect.Type, options Options) structField {
 	//extract fields and anonymous struct fields(they are treated as same level)
 	//at the time,any conv on unexported field is not supported
@@ -274,8 +312,8 @@ func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, op
 	}
 
 	//options should be divided
-	p.srcStruct = extractStructFieldFields(srcType, options)
-	p.dstStruct = extractStructFieldFields(dstType, options)
+	p.srcStruct = cachedStructField(srcType, options)
+	p.dstStruct = cachedStructField(dstType, options)
 	// cache  the field later
 
 	for i := 0; i < len(p.dstStruct.List); i++ {
