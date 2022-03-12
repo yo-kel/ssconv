@@ -26,7 +26,7 @@ func debugOutput(a ...interface{}) {
 func TestBasicIntCon(t *testing.T) {
 	var x, y int
 	x = 1
-	err := Conv(&x, &y, *new(Options), *new(ParamList))
+	err := Conv(&x, &y, new(Options), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -38,7 +38,7 @@ func TestBasicIntCon(t *testing.T) {
 func TestBasicIntCon2(t *testing.T) {
 	var x, y int
 	x = 1
-	err := Conv(&x, &y, *new(Options), *new(ParamList))
+	err := Conv(&x, &y, new(Options), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -52,7 +52,7 @@ func TestPtrCon(t *testing.T) {
 	y := new(int)
 	*x = 1
 	*y = 2
-	err := Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -67,7 +67,7 @@ func TestPtrCon2(t *testing.T) {
 	x := new(int)
 	var y *int
 	*x = 1
-	err := Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -83,7 +83,7 @@ func TestPtrCon3(t *testing.T) {
 	y := new(int)
 	*x = 1
 	*y = 2
-	err := Conv(&x, &y, *new(Options).SetDeepCode(false), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -98,7 +98,7 @@ func TestPtrCon4(t *testing.T) {
 	x := new(int)
 	var y *int
 	*x = 1
-	err := Conv(&x, &y, *new(Options).SetDeepCode(false), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
 	if err != nil {
 		t.Error(err)
 	}
@@ -112,7 +112,7 @@ func TestPtrCon4(t *testing.T) {
 func TestPtrCon5(t *testing.T) {
 	var x *int
 	var y int
-	err := Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	debugOutput(y)
 
 	if err == nil || err.Error() != "value of *int in src is nil" {
@@ -123,7 +123,7 @@ func TestPtrCon5(t *testing.T) {
 func TestPtrCon6(t *testing.T) {
 	var x *int
 	var y int
-	err := Conv(&x, &y, *new(Options).SetDeepCode(false), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
 	debugOutput(y)
 
 	if err == nil || err.Error() != "value of *int in src is nil" {
@@ -144,7 +144,7 @@ func TestStruct(t *testing.T) {
 		V2 float32
 	}
 	var b B
-	_ = Conv(&a, &b, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&a, &b, new(Options).SetDeepCode(false), *new(ParamList))
 	debugOutput(b.V1)
 	debugOutput(b.V2)
 
@@ -172,7 +172,7 @@ func TestStruct2(t *testing.T) {
 		V2 float32
 	}
 	var b B
-	_ = Conv(&a, &b, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&a, &b, new(Options).SetDeepCode(false), *new(ParamList))
 	debugOutput(b.V1)
 	debugOutput(b.V2)
 
@@ -202,7 +202,7 @@ func TestStruct3(t *testing.T) {
 		B_B
 	}
 	var b B
-	_ = Conv(&a, &b, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&a, &b, new(Options).SetDeepCode(false), *new(ParamList))
 	debugOutput(b.V1)
 	debugOutput(b.V2)
 
@@ -233,7 +233,7 @@ func TestStruct4(t *testing.T) {
 		CC C
 	}
 	var b B
-	_ = Conv(&a, &b, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&a, &b, new(Options).SetDeepCode(false), *new(ParamList))
 
 	debugOutput(b)
 
@@ -246,7 +246,7 @@ func TestSlice(t *testing.T) {
 	x := []int{1, 2, 3, 4}
 	var y []int
 
-	_ = Conv(&x, &y, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
 	if !cmp.Equal(x, y) {
 		t.Error()
 	}
@@ -261,10 +261,11 @@ func TestSlice2(t *testing.T) {
 	x := []int{1, 2, 3, 4}
 	var y []int
 
-	_ = Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	_ = Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	if !cmp.Equal(x, y) {
 		t.Error()
 	}
+	debugOutput(y)
 	y[0] = 5
 	y[1] = 6
 	if cmp.Equal(x, y) {
@@ -276,7 +277,7 @@ func TestSlice3(t *testing.T) {
 	x := [4]int{1, 2, 3, 4}
 	var y []int
 
-	_ = Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	_ = Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	if y[0] != 1 || y[1] != 2 || y[2] != 3 || y[3] != 4 {
 		t.Error()
 	}
@@ -293,7 +294,7 @@ func TestSlice3(t *testing.T) {
 func TestMap(t *testing.T) {
 	x := map[string]int{"hello": 1, "world": 2}
 	var y map[string]int
-	_ = Conv(&x, &y, *new(Options).SetDeepCode(false), *new(ParamList))
+	_ = Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
 	if !cmp.Equal(x, y) {
 		t.Error()
 	}
@@ -307,7 +308,10 @@ func TestMap(t *testing.T) {
 func TestMap1(t *testing.T) {
 	x := map[string]int{"hello": 1, "world": 2}
 	var y map[string]int
-	_ = Conv(&x, &y, *new(Options).SetDeepCode(true), *new(ParamList))
+	err := Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
+	if err != nil {
+		t.Error(err)
+	}
 	if !cmp.Equal(x, y) {
 		t.Error()
 	}
@@ -317,4 +321,110 @@ func TestMap1(t *testing.T) {
 	}
 	debugOutput(x)
 	debugOutput(y)
+}
+
+type dbPost struct {
+	ID      string `conv:"id"`
+	Title   string `conv:"title"`
+	Content string `conv:"content"`
+	User    string `conv:"user"`
+	Likes   int    `conv:"likes"`
+}
+
+type dbReply struct {
+	ID      string `conv:"id"`
+	Content string `conv:"content"`
+	User    string `conv:"user"`
+}
+
+type dbUser struct {
+	ID     string `conv:"id"`
+	Avatar string `conv:"avatar"`
+	Gender int    `conv:"gender"`
+	Age    int    `conv:"age"`
+}
+
+type Post struct {
+	ID      string  `conv:"id"`
+	Title   string  `conv:"title"`
+	Content string  `conv:"content"`
+	User    User    `conv:"user"`
+	Replies []Reply `conv:"reply"`
+	Likes   int     `conv:"likes"`
+}
+
+type Reply struct {
+	ID      string `conv:"id"`
+	Content string `conv:"content"`
+	User    User   `conv:"user"`
+}
+
+type User struct {
+	ID     string `conv:"id"`
+	Avatar string `conv:"avatar"`
+	Gender int    `conv:"gender"`
+	Age    int    `conv:"-"`
+}
+
+func TestStructTagOpt(t *testing.T) {
+	type User1 struct {
+		ID     string `conv:"id"`
+		Avatar string `conv:"avatar"`
+		Img    string `conv:"avatar"`
+		Gender int    `conv:"gender"`
+		Age    int    `conv:"-"`
+	}
+	var dst User1
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "hello.jpg",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src, &dst, nil, *new(ParamList))
+	expect := User1{
+		ID:     "yokel",
+		Avatar: "hello.jpg",
+		Img:    "hello.jpg",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
+}
+
+func TestStructTagOpt2(t *testing.T) {
+	type User1 struct {
+		ID     string `conv:"id"`
+		Avatar string `conv:"avatar,ignoreEmpty"`
+		Img    string `conv:"avatar"`
+		Gender int    `conv:"gender"`
+		Age    int    `conv:"-"`
+	}
+	var dst User1
+	dst.Avatar = "not hello.jpg"
+	dst.Img = "not hello.jpg"
+
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src, &dst, nil, *new(ParamList))
+	expect := User1{
+		ID:     "yokel",
+		Avatar: "not hello.jpg",
+		Img:    "",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
 }

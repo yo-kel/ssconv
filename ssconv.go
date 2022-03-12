@@ -3,23 +3,37 @@ package ssconv
 import (
 	"errors"
 	"fmt"
+	"github.com/barkimedes/go-deepcopy"
 	"github.com/mitchellh/hashstructure/v2"
-	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 )
 
 type LocalRule struct {
+	field string
+	// operation
+}
+
+type LocalRuleGroup struct {
+	path string
+	LocalRule
 }
 
 type Options struct {
 	DeepCopy   bool
-	LocalRules []LocalRule
+	LocalRules []*LocalRuleGroup
 	hashCode   uint64
 }
 
+type OptionsProperty struct {
+}
+
 func (op *Options) hash() uint64 {
+	if op == nil {
+		return 0
+	}
 	if op.hashCode != 0 {
 		return op.hashCode
 	}
@@ -32,9 +46,49 @@ func (op *Options) hash() uint64 {
 	return op.hashCode
 }
 
+func (op *Options) redirect(path string) {
+	if op == nil {
+		return
+	}
+	for _, localRule := range op.LocalRules {
+		if len(localRule.path) < len(path) || localRule.path[0:len(path)] != path {
+			panic("invalid path")
+		}
+		tail := 0
+		if len(localRule.path) > len(path) {
+			if localRule.path[len(path)] != '.' {
+				panic("invalid path")
+			}
+			tail = 1
+		}
+		localRule.path = localRule.path[len(path)+tail:]
+	}
+}
+
+func (op *Options) split(s string) *Options {
+	var splitRule []*LocalRuleGroup
+	for _, localRule := range op.LocalRules {
+		if len(localRule.path) > len(s) && localRule.path[0:len(s)] != s {
+			splitRule = append(splitRule, localRule)
+		}
+	}
+	res := new(Options)
+	res.DeepCopy = op.DeepCopy
+	cp, err := deepcopy.Anything(splitRule) // maybe change the library later
+	if err != nil {
+		panic(err)
+	}
+	res.LocalRules = cp.([]*LocalRuleGroup)
+	return res
+}
+
 func (op *Options) SetDeepCode(deepCopy bool) *Options {
 	op.DeepCopy = deepCopy
 	return op
+}
+
+func (op *Options) IsEmpty() bool {
+	return len(op.LocalRules) == 0 && op.DeepCopy == false
 }
 
 type ParamList struct {
@@ -45,7 +99,7 @@ type convState struct {
 
 type convFunc func(c *convState, src reflect.Value, dst reflect.Value, list ParamList)
 
-func Conv(src interface{}, dst interface{}, options Options, list ParamList) (err error) {
+func Conv(src interface{}, dst interface{}, options *Options, list ParamList) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if convErr, ok := r.(ConvErr); ok {
@@ -73,7 +127,7 @@ func Conv(src interface{}, dst interface{}, options Options, list ParamList) (er
 	return nil
 }
 
-func newConv(srcType, dstType reflect.Type, options Options) convFunc {
+func newConv(srcType, dstType reflect.Type, options *Options) convFunc {
 
 	/*if dstType.Kind() != reflect.Ptr && dstType.Kind() != reflect.Map && dstType.Kind() != reflect.Slice {
 		panic(ErrDstTypeNotReference)
@@ -81,7 +135,7 @@ func newConv(srcType, dstType reflect.Type, options Options) convFunc {
 
 	//fmt.Fprintln(os.Stderr, dstType,srcType)
 
-	//options that working in this level should be divided into a new Options
+	//options that working in this level shou ld be divided into a new Options
 	switch dstType.Kind() {
 	case reflect.Bool:
 		fallthrough
@@ -161,7 +215,7 @@ func (pc *PtrConverter) conv(c *convState, src reflect.Value, dst reflect.Value,
 	//when deepcopy is true
 }
 
-func newPtrConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
+func newPtrConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	pc := new(PtrConverter)
 	if options.DeepCopy {
 		pc.elemEnc = newConv(srcType.Elem(), dstType.Elem(), options)
@@ -179,11 +233,17 @@ type field struct {
 	alias string
 	tp    reflect.Type
 
+	hidden      bool
 	ignoreEmpty bool
-	param       bool
 
-	index     []int
-	converter convFunc
+	param     bool
+	paramName string
+
+	customConv bool
+	converter  convFunc
+	arg        []int
+
+	index []int
 }
 
 type structField struct {
@@ -215,23 +275,24 @@ type structFieldCacheKey struct {
 
 var structFieldCache sync.Map
 
-func genStructFieldCacheKey(t reflect.Type, options Options) structFieldCacheKey {
+func genStructFieldCacheKey(t reflect.Type, options *Options) structFieldCacheKey {
 	return structFieldCacheKey{
 		t:        t,
 		hashcode: options.hash(),
 	}
 }
 
-func cachedStructField(t reflect.Type, options Options) structField {
+func cachedStructField(t reflect.Type, options *Options) structField {
 	key := genStructFieldCacheKey(t, options)
 	if f, ok := structFieldCache.Load(key); ok {
 		return f.(structField)
 	}
+
 	f, _ := structFieldCache.LoadOrStore(key, extractStructFieldFields(t, options))
 	return f.(structField)
 }
 
-func extractStructFieldFields(t reflect.Type, options Options) structField {
+func extractStructFieldFields(t reflect.Type, options *Options) structField {
 	//extract fields and anonymous struct fields(they are treated as same level)
 	//at the time,any conv on unexported field is not supported
 
@@ -259,33 +320,57 @@ func extractStructFieldFields(t reflect.Type, options Options) structField {
 				copy(index, now.index)
 				index[len(now.index)] = i
 				if !(tft.Kind() == reflect.Struct && ts.Anonymous) {
-					tag := ts.Tag.Get("ssconv")
+					tag := ts.Tag.Get("conv")
+
+					var ignoreEmpty bool
+					var param bool
+					var paramName string
+					var hidden bool
+					var customConv bool
 
 					alias, opts := parseTag(tag)
 
 					if alias == "" {
 						alias = ts.Name
+					} else if alias == "-" {
+						alias = ""
+						hidden = true
 					}
 
-					var ignoreEmpty bool
-					var param bool
-
-					for _, opt := range opts {
-						switch opt {
-						case "ignoreEmpty":
-							ignoreEmpty = true
+					if len(opts) > 0 {
+						switch opts[0] {
 						case "param":
+							if len(opts) > 2 {
+								panic(errors.New("param: too many arguments"))
+							}
 							param = true
+							paramName = opts[1]
+						case "func":
+							//TODO
+						default:
+							for _, opt := range opts {
+								switch opt {
+								case "ignoreEmpty":
+									ignoreEmpty = true
+								}
+							}
 						}
 					}
 
 					f := field{
-						name:        ts.Name,
-						alias:       alias,
-						tp:          ts.Type,
+						name:  ts.Name,
+						alias: alias,
+						tp:    ts.Type,
+
 						ignoreEmpty: ignoreEmpty,
-						param:       param,
-						index:       index,
+						hidden:      hidden,
+
+						param:     param,
+						paramName: paramName,
+
+						customConv: customConv,
+
+						index: index,
 					}
 					fields = append(fields, f)
 					continue
@@ -295,59 +380,102 @@ func extractStructFieldFields(t reflect.Type, options Options) structField {
 		}
 	}
 
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].hidden != fields[j].hidden {
+			return !fields[i].hidden // fields[i].hidden<fields[j].hidden
+		}
+		return true
+	})
+
 	//converter of returned field is empty
 
 	nameIndex := make(map[string][]int, len(fields))
 	for i := range fields {
 		f := &fields[i]
-		nameIndex[f.name] = append(nameIndex[f.name], i)
+		nameIndex[f.alias] = append(nameIndex[f.alias], i)
 		//fmt.Fprintln(os.Stderr, "->>",f.name,f.tp)
 	}
+
 	return structField{List: fields, NameIndex: nameIndex}
 }
 
-func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, options Options) (p pairStructField) {
+func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, options *Options) (p pairStructField) {
 	if srcType.Kind() != reflect.Struct {
 		convPanic(ErrDstStructSrcNotStruct)
 	}
 
-	//options should be divided
-	p.srcStruct = cachedStructField(srcType, options)
+	// options should be divided
+	p.srcStruct = cachedStructField(srcType, nil) //localRules can only be set on dst fields
 	p.dstStruct = cachedStructField(dstType, options)
-	// cache  the field later
-
+	// cache the field later
 	for i := 0; i < len(p.dstStruct.List); i++ {
 		f := &p.dstStruct.List[i]
 
-		index, exist := p.srcStruct.NameIndex[f.name]
+		if f.hidden {
+			break
+		}
+
+		index, exist := p.srcStruct.NameIndex[f.alias]
 		if !exist {
-			panic("field not exists")
+			panic(fmt.Sprintf("field %s not exists", f.alias))
 		}
 		if len(index) > 1 {
 			panic("ambiguous field")
 		}
+		if len(index) == 0 {
+			panic("src field not exist")
+		}
+		if p.srcStruct.List[index[0]].hidden {
+			panic("src field is hidden")
+		}
 		//fmt.Fprintln(os.Stderr, "->>",p.srcStruct.List[index[0]].name,f.name)
+	}
+	//
+	if options != nil {
+		//TODO delete unused field
 	}
 	return p
 }
 
 type structConverter struct {
 	pairStructField
-	options Options
+	options map[string]*Options
 }
 
-func newStructConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
+func newStructConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	pair := extractPairStructFieldFields(srcType, dstType, options)
+	options.redirect(srcType.Name())
+	//fmt.Fprintln(os.Stderr,pair)
 
-	structConv := structConverter{pairStructField: pair, options: options}
-	return structConv.conv
+	sc := structConverter{pairStructField: pair, options: make(map[string]*Options)}
+	//fmt.Fprintln(os.Stderr,sc.pairStructField)
+	for i := 0; i < len(pair.dstStruct.List); i++ { // better way to do it ?
+		df := &pair.dstStruct.List[i]
+		if df.tp.Kind() != reflect.Struct {
+			continue
+		}
+		_, exists := sc.options[df.alias]
+		if exists {
+			continue
+		}
+
+		sc.options[df.alias] = options.split(df.alias)
+
+	}
+
+	return sc.conv
 }
 
 func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
 	for i := 0; i < len(s.dstStruct.List); i++ {
 		df := &s.dstStruct.List[i]
+		if df.hidden {
+			break
+		}
+
 		dv := dst
-		sIndex := s.srcStruct.NameIndex[df.name]
+		sIndex := s.srcStruct.NameIndex[df.alias]
+		//fmt.Println(i," ",sIndex[0])
 		sf := &s.srcStruct.List[sIndex[0]]
 		sv := src
 
@@ -358,10 +486,19 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 		for _, j := range sf.index {
 			sv = sv.Field(j)
 		}
-		//fmt.Fprintln(os.Stderr, "->>",sv, dv)
+		//fmt.Fprintln(os.Stderr,df,dv,sv)
 
-		//todo no
-		newConv(sv.Type(), dv.Type(), s.options)(c, sv, dv, list)
+		if df.ignoreEmpty && sv.IsZero() {
+			continue
+		}
+
+		if df.param {
+			//TODO
+		} else if df.customConv {
+			//TODO
+		} else {
+			newConv(sv.Type(), dv.Type(), s.options[df.alias])(c, sv, dv, list)
+		}
 	}
 }
 
@@ -369,7 +506,7 @@ type mapConverter struct {
 	elemFunc convFunc
 }
 
-func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
+func newMapConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	if srcType.Kind() != reflect.Map {
 		panic("src not map")
 	}
@@ -384,38 +521,38 @@ func newMapConverter(srcType reflect.Type, dstType reflect.Type, options Options
 	srcElem := srcType.Elem()
 	dstElem := dstType.Elem()
 
-	var elemFunc convFunc
-	if srcType != dstType {
-		elemFunc = newConv(srcElem, dstElem, options)
+	if !options.DeepCopy {
+		return func(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
+			dst.Set(src)
+		}
 	}
+	var elemFunc convFunc
+	//if srcType != dstType {
+	elemFunc = newConv(srcElem, dstElem, options)
+	//}
+
 	mapConv := mapConverter{elemFunc: elemFunc}
 	return mapConv.conv
 }
 
 func (m *mapConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
-	//todo deep copying setting
-	var deepcopy bool
-	if deepcopy {
-		dstKey := dst.Type().Key()
-		dstElem := dst.Type().Elem()
-		dstMap := reflect.MapOf(dstKey, dstElem)
-		dst.Set(reflect.MakeMapWithSize(dstMap, len(src.MapKeys())))
-		fmt.Fprintln(os.Stderr, "->>", src.MapKeys())
-		for _, k := range src.MapKeys() {
-			fmt.Fprintln(os.Stderr, "->>", k, src.MapIndex(k), dstElem)
+	dstKey := dst.Type().Key()
+	dstElem := dst.Type().Elem()
+	dstMap := reflect.MapOf(dstKey, dstElem)
+	dst.Set(reflect.MakeMapWithSize(dstMap, len(src.MapKeys())))
+	//fmt.Fprintln(os.Stderr, "->>", src.MapKeys())
+	for _, k := range src.MapKeys() {
 
-			//map element is unaddressable
-			//here we converter src to tmp value then to dst value
-			if m.elemFunc == nil {
-				dst.SetMapIndex(k, src.MapIndex(k))
-			} else {
-				tmpValue := reflect.New(dstElem)
-				m.elemFunc(c, src.MapIndex(k), tmpValue, list)
-				dst.SetMapIndex(k, tmpValue)
-			}
+		//map element is unaddressable
+		//here we converter src to tmp value then to dst value
+		//fmt.Fprintln(os.Stderr, "->>", k, src.MapIndex(k), dstElem)
+		if m.elemFunc == nil {
+			dst.SetMapIndex(k, src.MapIndex(k))
+		} else {
+			tmpValue := reflect.New(dstElem).Elem()
+			m.elemFunc(c, src.MapIndex(k), tmpValue, list)
+			dst.SetMapIndex(k, tmpValue)
 		}
-	} else {
-		dst.Set(src)
 	}
 }
 
@@ -424,29 +561,27 @@ type sliceConverter struct {
 }
 
 func (s *sliceConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
-	//todo deep copying setting
-	var deepcopy bool
-	if deepcopy {
-		srcElem := src.Type().Elem()
-		elemSlice := reflect.SliceOf(srcElem)
-		dst.Set(reflect.MakeSlice(elemSlice, src.Len(), src.Len()))
-		//fmt.Fprintln(os.Stderr, "->>",src.Len())
-		for i := 0; i < src.Len(); i++ {
-			s.elemFunc(c, src.Index(i), dst.Index(i), list)
-		}
-	} else {
-		dst.Set(src)
+	srcElem := src.Type().Elem()
+	elemSlice := reflect.SliceOf(srcElem)
+	dst.Set(reflect.MakeSlice(elemSlice, src.Len(), src.Len()))
+	//fmt.Fprintln(os.Stderr, "->>", src.Len())
+	for i := 0; i < src.Len(); i++ {
+		s.elemFunc(c, src.Index(i), dst.Index(i), list)
 	}
 }
 
-func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options Options) convFunc {
+func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	if srcType.Kind() != reflect.Slice && srcType.Kind() != reflect.Array {
 		panic("src not slice nor array")
 	}
 
 	srcElem := srcType.Elem()
 	dstElem := dstType.Elem()
-
+	if !options.DeepCopy {
+		return func(c *convState, src reflect.Value, dst reflect.Value, list ParamList) {
+			dst.Set(src)
+		}
+	}
 	sliceConv := sliceConverter{elemFunc: newConv(srcElem, dstElem, options)}
 	return sliceConv.conv
 }
