@@ -428,3 +428,59 @@ func TestStructTagOpt2(t *testing.T) {
 		t.Error()
 	}
 }
+
+type User1 struct {
+	ID     string `conv:"id,func,Hello"`
+	Avatar string `conv:"avatar,ignoreEmpty"`
+	Img    string `conv:"avatar"`
+	Gender int    `conv:"gender"`
+	Age    int    `conv:"-"`
+}
+
+func (u *User1) Hello(user dbUser, m ParamList) {
+	u.ID = user.ID + "123"
+}
+
+func TestStructCustomFunc(t *testing.T) {
+	var dst User1
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src, &dst, nil, *new(ParamList))
+	expect := User1{
+		ID:     "yokel123",
+		Avatar: "hello",
+		Img:    "hello",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
+
+}
+
+func TestPtrToValue(t *testing.T) {
+	t.SkipNow() // ptr to value cant not be converted automatically
+	x := new(int)
+	*x = 1
+	var y int
+
+	expect := 1
+	err := Conv(&x, &y, nil, *new(ParamList))
+	if err != nil {
+		t.Error(err)
+	}
+	if !cmp.Equal(expect, y) {
+		t.Error()
+	}
+	y = 3
+	if cmp.Equal(*x, y) {
+		t.Error()
+	}
+}
