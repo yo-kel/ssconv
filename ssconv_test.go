@@ -367,10 +367,10 @@ type User struct {
 }
 
 func TestStructTagOpt(t *testing.T) {
+	//t.SkipNow()//param test
 	type User1 struct {
 		ID     string `conv:"id"`
 		Avatar string `conv:"avatar"`
-		Img    string `conv:"avatar"`
 		Gender int    `conv:"gender"`
 		Age    int    `conv:"-"`
 	}
@@ -385,7 +385,6 @@ func TestStructTagOpt(t *testing.T) {
 	expect := User1{
 		ID:     "yokel",
 		Avatar: "hello.jpg",
-		Img:    "hello.jpg",
 		Gender: 1,
 		Age:    0,
 	}
@@ -400,17 +399,14 @@ func TestStructTagOpt2(t *testing.T) {
 	type User1 struct {
 		ID     string `conv:"id"`
 		Avatar string `conv:"avatar,ignoreEmpty"`
-		Img    string `conv:"avatar"`
 		Gender int    `conv:"gender"`
 		Age    int    `conv:"-"`
 	}
 	var dst User1
 	dst.Avatar = "not hello.jpg"
-	dst.Img = "not hello.jpg"
 
 	src := dbUser{
 		ID:     "yokel",
-		Avatar: "",
 		Gender: 1,
 		Age:    2,
 	}
@@ -418,12 +414,11 @@ func TestStructTagOpt2(t *testing.T) {
 	expect := User1{
 		ID:     "yokel",
 		Avatar: "not hello.jpg",
-		Img:    "",
 		Gender: 1,
 		Age:    0,
 	}
-	debugOutput(dst)
 	debugOutput(expect)
+	debugOutput(dst)
 	if !cmp.Equal(expect, dst) {
 		t.Error()
 	}
@@ -432,7 +427,6 @@ func TestStructTagOpt2(t *testing.T) {
 type User1 struct {
 	ID     string `conv:"id,func,Hello"`
 	Avatar string `conv:"avatar,ignoreEmpty"`
-	Img    string `conv:"avatar"`
 	Gender int    `conv:"gender"`
 	Age    int    `conv:"-"`
 }
@@ -453,7 +447,6 @@ func TestStructCustomFunc(t *testing.T) {
 	expect := User1{
 		ID:     "yokel123",
 		Avatar: "hello",
-		Img:    "hello",
 		Gender: 1,
 		Age:    0,
 	}
@@ -483,4 +476,76 @@ func TestPtrToValue(t *testing.T) {
 	if cmp.Equal(*x, y) {
 		t.Error()
 	}
+}
+
+func TestStructLocalCustomFunc(t *testing.T) {
+	var dst User1
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src, &dst, nil, *new(ParamList))
+	expect := User1{
+		ID:     "yokel123",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
+
+	src1 := dbUser{
+		ID:     "yokel",
+		Avatar: "",
+		Gender: 1,
+		Age:    2,
+	}
+
+	var dst1 User1
+	dst1.Avatar = "yokel"
+	_ = Conv(src1, &dst1, new(Options).AddLocalRule(
+		NewLocalRuleGroup("").AddRule(
+			"avatar",
+			map[string]interface{}{
+				"ignoreEmpty": false,
+			})),
+		*new(ParamList))
+
+	expect1 := User1{
+		ID:     "yokel123",
+		Avatar: "",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst1)
+	debugOutput(expect1)
+	if !cmp.Equal(expect1, dst1) {
+		t.Error()
+	}
+
+	var dst2 User1
+	src2 := dbUser{
+		ID:     "yokel",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src2, &dst2, nil, *new(ParamList))
+	expect2 := User1{
+		ID:     "yokel123",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst2)
+	debugOutput(expect2)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
+
 }
