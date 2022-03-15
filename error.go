@@ -7,7 +7,9 @@ import (
 )
 
 var (
-	ErrDstTypeNotReference = errors.New("dst is supposed to be pointer,map or slice")
+	ErrDstTypeNotReference   = errors.New("dst is supposed to be pointer,map or slice")
+	ErrDstStructSrcNotStruct = errors.New("dst is struct while src is not")
+	ErrDuplicateField        = errors.New("duplicate field")
 )
 
 const (
@@ -35,6 +37,16 @@ type ErrUnableAssignType struct {
 	dstType reflect.Type
 }
 
+func typeName(tp reflect.Type) string {
+	res := ""
+	for tp.Kind() == reflect.Ptr {
+		tp = tp.Elem()
+		res += "*"
+	}
+	res += tp.Name()
+	return res
+}
+
 func (e *ErrUnableAssignType) Error() string {
-	return fmt.Sprintf("cant not assign %s in src to %s in dst", e.srcType.Name(), e.dstType.Name())
+	return fmt.Sprintf("cant not assign %s in src to %s in dst", typeName(e.srcType), typeName(e.dstType))
 }
