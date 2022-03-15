@@ -19,41 +19,49 @@ type CustomFunc func(data interface{}, param map[string]interface{}) (result int
 var customFuncType = reflect.TypeOf(func(data interface{}, param map[string]interface{}) (result interface{}, err error) { return nil, nil })
 
 type LocalRule struct {
-	field     string
-	operation map[string]interface{}
+	Field     string
+	Operation map[string]interface{}
 }
 
 func (rule *LocalRule) clone() *LocalRule {
 	newrule := new(LocalRule)
-	newrule.field = rule.field
-	newrule.operation = deepcopy.Copy(rule.operation).(map[string]interface{})
+	newrule.Field = rule.Field
+	newrule.Operation = deepcopy.Copy(rule.Operation).(map[string]interface{})
 	return newrule
 }
 
 type LocalRuleGroup struct {
-	path  string
-	rules []LocalRule
+	Path  string
+	Rules []LocalRule
 }
 
 func NewLocalRuleGroup(path string) *LocalRuleGroup {
 	ret := new(LocalRuleGroup)
-	ret.path = path
+	ret.Path = path
 	return ret
 }
 
 func (grp *LocalRuleGroup) AddRule(field string, operation map[string]interface{}) *LocalRuleGroup {
-	grp.rules = append(grp.rules, LocalRule{
-		field:     field,
-		operation: operation,
+
+	// convert function to value to hash
+	ope := deepcopy.Copy(operation).(map[string]interface{})
+	for k, v := range ope {
+		if reflect.TypeOf(v).Kind() == reflect.Func {
+			ope[k] = reflect.ValueOf(v)
+		}
+	}
+	grp.Rules = append(grp.Rules, LocalRule{
+		Field:     field,
+		Operation: ope,
 	})
 	return grp
 }
 
 func (grp *LocalRuleGroup) clone() *LocalRuleGroup {
 	newgrp := new(LocalRuleGroup)
-	newgrp.path = grp.path
-	for _, rule := range grp.rules {
-		newgrp.rules = append(newgrp.rules, *rule.clone())
+	newgrp.Path = grp.Path
+	for _, rule := range grp.Rules {
+		newgrp.Rules = append(newgrp.Rules, *rule.clone())
 	}
 	return newgrp
 }
@@ -103,17 +111,17 @@ func (op *Options) redirect(path string) *Options {
 		return op
 	}
 	for _, localRule := range op.LocalRules {
-		if len(localRule.path) < len(path) || localRule.path[0:len(path)] != path {
+		if len(localRule.Path) < len(path) || localRule.Path[0:len(path)] != path {
 			convPanicStr("invalid path")
 		}
 		tail := 0
-		if len(localRule.path) > len(path) {
-			if localRule.path[len(path)] != '.' {
+		if len(localRule.Path) > len(path) {
+			if localRule.Path[len(path)] != '.' {
 				convPanicStr("invalid path")
 			}
 			tail = 1
 		}
-		localRule.path = localRule.path[len(path)+tail:]
+		localRule.Path = localRule.Path[len(path)+tail:]
 	}
 	return op
 }
@@ -124,7 +132,7 @@ func (op *Options) effect() *Options {
 	}
 	var effectRule []*LocalRuleGroup
 	for _, localRule := range op.LocalRules {
-		if localRule.path == "" {
+		if localRule.Path == "" {
 			effectRule = append(effectRule, localRule)
 		}
 	}
@@ -138,7 +146,7 @@ func (op *Options) effect() *Options {
 func (op *Options) split(s string) *Options {
 	var splitRule []*LocalRuleGroup
 	for _, localRule := range op.LocalRules {
-		if len(localRule.path) > len(s) && localRule.path[0:len(s)] != s {
+		if len(localRule.Path) > len(s) && localRule.Path[0:len(s)] != s {
 			splitRule = append(splitRule, localRule.clone())
 		}
 	}
@@ -167,7 +175,7 @@ func Conv(src interface{}, dst interface{}, options *Options, list ParamList) (e
 	defer func() {
 		if r := recover(); r != nil {
 			if convErr, ok := r.(ConvErr); ok {
-				err = errors.New(convErr.Path + err.Error())
+				err = errors.New("ssconvError: " + convErr.Path + convErr.Err.Error())
 			} else {
 				panic(r)
 			}
@@ -245,11 +253,11 @@ type ConvErr struct {
 }
 
 func convPanic(err error) {
-	panic(ConvErr{Err: err, Path: ": "})
+	panic(ConvErr{Err: err, Path: ""})
 }
 
 func convPanicStr(err string) {
-	panic(ConvErr{Err: errors.New(err), Path: ": "})
+	panic(ConvErr{Err: errors.New(err), Path: ""})
 }
 
 func UnexpectedTypeConverter(c *convState, src reflect.Value, dst reflect.Value, list reflect.Value) {
@@ -260,6 +268,7 @@ func basicConverter(c *convState, src reflect.Value, dst reflect.Value, list ref
 	//
 
 	if src.Kind() == reflect.Ptr && src.IsNil() {
+		fmt.Fprintln(os.Stderr, src.Type())
 		convPanic(&ErrNilSrcPtr{src: src})
 	}
 
@@ -362,6 +371,10 @@ type structFieldCacheKey struct {
 var structFieldCache sync.Map
 
 func genStructFieldCacheKey(t reflect.Type, options *Options) structFieldCacheKey {
+	if options.hash() == 6541746513145540259 {
+		fmt.Fprint(os.Stderr, "---------------------", options.LocalRules[0])
+	}
+
 	return structFieldCacheKey{
 		t:        t,
 		hashcode: options.hash(),
@@ -379,24 +392,25 @@ func cachedStructField(t reflect.Type, options *Options) structField {
 	ret := _ret.clone()
 
 	//fmt.Fprintln(os.Stderr,"->>",ret)
-	//fmt.Fprintln(os.Stderr,_ret)
+	fmt.Fprintln(os.Stderr, "->>", t, options)
 	if options != nil {
 		opt := options.effect()
 		for _, grp := range opt.LocalRules {
-			for _, rule := range grp.rules {
-				index, ok := ret.NameIndex[rule.field]
+			for _, rule := range grp.Rules {
+				index, ok := ret.NameIndex[rule.Field]
 				if !ok {
 					convPanicStr("localRule: cant find field")
 				}
-				for k, v := range rule.operation {
+				for k, v := range rule.Operation {
 					f := &ret.List[index]
 					switch k {
 					case "func":
-						if v == nil {
+						val := v.(reflect.Value)
+						if !val.IsValid() || val.IsNil() {
 							f.customConv = false
 						} else {
 							f.customConv = true
-							f.converter = reflect.ValueOf(v)
+							f.converter = val
 						}
 					case "ignoreEmpty":
 						ignoreEmpty, ok := v.(bool)
@@ -677,8 +691,10 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 				if df != nil {
 					newPath := fmt.Sprintf("(%s)", dst.Type()) + df.name
 					dot := ""
-					if convErr.Path != ":" {
+					if convErr.Path != "" {
 						dot = "."
+					} else {
+						convErr.Path = ": "
 					}
 					convErr.Path = newPath + dot + convErr.Path
 				}

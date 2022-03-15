@@ -1,6 +1,7 @@
 package ssconv
 
 import (
+	"errors"
 	"fmt"
 	"github.com/google/go-cmp/cmp"
 	"os"
@@ -114,19 +115,8 @@ func TestPtrCon5(t *testing.T) {
 	var y int
 	err := Conv(&x, &y, new(Options).SetDeepCode(true), *new(ParamList))
 	debugOutput(y)
-
-	if err == nil || err.Error() != "value of *int in src is nil" {
-		t.Error()
-	}
-}
-
-func TestPtrCon6(t *testing.T) {
-	var x *int
-	var y int
-	err := Conv(&x, &y, new(Options).SetDeepCode(false), *new(ParamList))
-	debugOutput(y)
-
-	if err == nil || err.Error() != "value of *int in src is nil" {
+	debugOutput(err)
+	if err == nil || err.Error() != "ssconvError: value of *int in src is nil" {
 		t.Error()
 	}
 }
@@ -550,4 +540,104 @@ func TestStructLocalCustomFunc(t *testing.T) {
 	if !cmp.Equal(expect, dst) {
 		t.Error()
 	}
+}
+
+func TestErrorTrace(t *testing.T) {
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "",
+		Gender: 1,
+		Age:    2,
+	}
+
+	var dst User1
+	dst.Avatar = "yokel"
+
+	op := new(Options).AddLocalRule(
+		NewLocalRuleGroup("").AddRule(
+			"avatar",
+			map[string]interface{}{
+				"func": func(user *User1, data dbUser, list ParamList) error {
+					fmt.Fprint(os.Stderr, "DSADDDDDDDDDDDDDDDDDDDDDDD")
+					return errors.New("error test")
+				},
+			}))
+
+	err := Conv(src, &dst, op,
+		*new(ParamList))
+
+	if err != nil {
+		debugOutput(err)
+	}
+
+	debugOutput(ShowTypeJson(src, dst, op))
+
+	expect := User1{
+		ID:     "yokel123",
+		Avatar: "",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+}
+
+func TestErrorTrace2(t *testing.T) {
+	var dst User1
+	src := dbUser{
+		ID:     "yokel",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    2,
+	}
+	_ = Conv(src, &dst, nil, *new(ParamList))
+	expect := User1{
+		ID:     "yokel123",
+		Avatar: "hello",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst)
+	debugOutput(expect)
+	if !cmp.Equal(expect, dst) {
+		t.Error()
+	}
+	debugOutput(ShowTypeJson(src, dst, nil))
+	src2 := dbUser{
+		ID:     "yokel",
+		Avatar: "",
+		Gender: 1,
+		Age:    2,
+	}
+
+	var dst2 User1
+	dst2.Avatar = "yokel"
+
+	op := new(Options).AddLocalRule(
+		NewLocalRuleGroup("").AddRule(
+			"avatar",
+			map[string]interface{}{
+				"func": func(user *User1, data dbUser, list ParamList) error {
+					fmt.Fprint(os.Stderr, "DSADDDDDDDDDDDDDDDDDDDDDDD")
+					return errors.New("error test")
+				},
+			}))
+
+	err := Conv(src2, &dst2, op,
+		*new(ParamList))
+
+	if err != nil {
+		debugOutput(err)
+	}
+
+	debugOutput(ShowTypeJson(src2, dst2, op))
+
+	expect2 := User1{
+		ID:     "yokel123",
+		Avatar: "",
+		Gender: 1,
+		Age:    0,
+	}
+	debugOutput(dst2)
+	debugOutput(expect2)
 }
