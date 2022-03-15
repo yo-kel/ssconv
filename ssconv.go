@@ -92,7 +92,7 @@ func (op *Options) hash() uint64 {
 	}
 	hashCode, err := hashstructure.Hash(op, hashstructure.FormatV2, nil)
 	if err != nil {
-		panic(err)
+		convPanic(err)
 	}
 	op.hashCode = hashCode
 	return op.hashCode
@@ -104,12 +104,12 @@ func (op *Options) redirect(path string) *Options {
 	}
 	for _, localRule := range op.LocalRules {
 		if len(localRule.path) < len(path) || localRule.path[0:len(path)] != path {
-			panic("invalid path")
+			convPanicStr("invalid path")
 		}
 		tail := 0
 		if len(localRule.path) > len(path) {
 			if localRule.path[len(path)] != '.' {
-				panic("invalid path")
+				convPanicStr("invalid path")
 			}
 			tail = 1
 		}
@@ -158,7 +158,7 @@ func (op *Options) IsEmpty() bool {
 
 type ParamList map[string]interface{}
 
-type convState struct {
+type convState struct { // TODO detect pointer circle
 }
 
 type convFunc func(c *convState, src reflect.Value, dst reflect.Value, list reflect.Value)
@@ -167,9 +167,9 @@ func Conv(src interface{}, dst interface{}, options *Options, list ParamList) (e
 	defer func() {
 		if r := recover(); r != nil {
 			if convErr, ok := r.(ConvErr); ok {
-				err = convErr.Err
+				err = errors.New(convErr.Path + err.Error())
 			} else {
-				panic(convErr)
+				panic(r)
 			}
 		}
 	}()
@@ -240,11 +240,16 @@ func newConv(srcType, dstType reflect.Type, options *Options) convFunc {
 }
 
 type ConvErr struct {
-	Err error
+	Path string
+	Err  error
 }
 
 func convPanic(err error) {
-	panic(ConvErr{Err: err})
+	panic(ConvErr{Err: err, Path: ": "})
+}
+
+func convPanicStr(err string) {
+	panic(ConvErr{Err: errors.New(err), Path: ": "})
 }
 
 func UnexpectedTypeConverter(c *convState, src reflect.Value, dst reflect.Value, list reflect.Value) {
@@ -381,7 +386,7 @@ func cachedStructField(t reflect.Type, options *Options) structField {
 			for _, rule := range grp.rules {
 				index, ok := ret.NameIndex[rule.field]
 				if !ok {
-					panic("localRule: cant find field")
+					convPanicStr("localRule: cant find field")
 				}
 				for k, v := range rule.operation {
 					f := &ret.List[index]
@@ -396,13 +401,13 @@ func cachedStructField(t reflect.Type, options *Options) structField {
 					case "ignoreEmpty":
 						ignoreEmpty, ok := v.(bool)
 						if !ok {
-							panic("localRule: cant find field")
+							convPanicStr("localRule: cant find field")
 						}
 						f.ignoreEmpty = ignoreEmpty
 					case "param":
 						param, ok := v.(string)
 						if !ok {
-							panic("localRule: cant find field")
+							convPanicStr("localRule: cant find field")
 						}
 						if param == "" {
 							f.param = true
@@ -471,7 +476,7 @@ func extractStructFieldFields(t reflect.Type, options *Options) structField {
 						switch opts[0] {
 						case "param":
 							if len(opts) > 2 {
-								panic(errors.New("param: too many arguments"))
+								convPanicStr("param: too many arguments")
 							}
 							param = true
 							paramName = opts[1]
@@ -493,7 +498,7 @@ func extractStructFieldFields(t reflect.Type, options *Options) structField {
 								}
 
 								if !exist {
-									panic(errors.New("cant find method"))
+									convPanicStr("cant find method")
 								}
 							}
 
@@ -554,7 +559,7 @@ func extractStructFieldFields(t reflect.Type, options *Options) structField {
 
 		_, exist := nameIndex[f.alias]
 		if exist {
-			panic("duplicate field name")
+			convPanicStr("duplicate field name")
 		}
 		nameIndex[f.alias] = i
 	}
@@ -585,10 +590,10 @@ func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, op
 
 		index, exist := p.srcStruct.NameIndex[f.alias]
 		if !exist {
-			panic(fmt.Sprintf("field %s not exists", f.alias))
+			convPanicStr(fmt.Sprintf("field %s not exists", f.alias))
 		}
 		if p.srcStruct.List[index].hidden {
-			panic("src field is hidden")
+			convPanicStr("src field is hidden")
 		}
 		//fmt.Fprintln(os.Stderr, "->>",p.srcStruct.List[index[0]].name,f.name)
 	}
@@ -664,8 +669,28 @@ var errorInterfaceType = reflect.TypeOf((*error)(nil)).Elem()
 
 func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Value, list reflect.Value) {
 	//fmt.Fprintln(os.Stderr,s.dstStruct.List)
+
+	var df *field
+	defer func() { // error trace
+		if r := recover(); r != nil {
+			if convErr, ok := r.(ConvErr); ok {
+				if df != nil {
+					newPath := fmt.Sprintf("(%s)", dst.Type()) + df.name
+					dot := ""
+					if convErr.Path != ":" {
+						dot = "."
+					}
+					convErr.Path = newPath + dot + convErr.Path
+				}
+				panic(convErr)
+			} else {
+				panic(r)
+			}
+		}
+	}()
+
 	for i := 0; i < len(s.dstStruct.List); i++ {
-		df := &s.dstStruct.List[i]
+		df = &s.dstStruct.List[i]
 		if df.hidden {
 			break
 		}
@@ -678,9 +703,9 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 
 			firstRet := -1
 			for i, v := range ret {
-				if v.Type() == errorInterfaceType {
+				if v.Type() == errorInterfaceType { // panic non-nil error
 					if !v.IsNil() {
-						panic(v.Interface())
+						convPanic(v.Interface().(error))
 					}
 					continue
 				}
@@ -739,14 +764,14 @@ type mapConverter struct {
 
 func newMapConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	if srcType.Kind() != reflect.Map {
-		panic("src not map")
+		convPanicStr("src not map")
 	}
 	srcKey := srcType.Key()
 	dstKey := dstType.Key()
 
 	//map key must be the same
 	if srcKey != dstKey {
-		panic("different map key type")
+		convPanicStr("different map key type")
 	}
 
 	srcElem := srcType.Elem()
@@ -803,7 +828,7 @@ func (s *sliceConverter) conv(c *convState, src reflect.Value, dst reflect.Value
 
 func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options *Options) convFunc {
 	if srcType.Kind() != reflect.Slice && srcType.Kind() != reflect.Array {
-		panic("src not slice nor array")
+		convPanicStr("src not slice nor array")
 	}
 
 	srcElem := srcType.Elem()
@@ -842,14 +867,14 @@ func showTypeJson(srcType reflect.Type, dstType reflect.Type, options *Options) 
 
 	for i := 0; i < len(pair.dstStruct.List); i++ {
 		df := &pair.dstStruct.List[i]
+		if df.hidden {
+			continue
+		}
 		var fm typeJson
 		fm = make(typeJson)
 		//fm["type"]=df.tp.Name()
 		if df.alias != df.name && df.alias != "" {
 			fm["alias"] = df.alias
-		}
-		if df.hidden {
-			fm["hidden"] = df.hidden
 		}
 		if df.ignoreEmpty {
 			fm["ignoreEmpty"] = df.ignoreEmpty
@@ -861,16 +886,8 @@ func showTypeJson(srcType reflect.Type, dstType reflect.Type, options *Options) 
 			fm["func"] = getFunctionName(df.converter) + " " + df.converter.Type().String()
 		}
 
-		if df.param || df.customConv || df.hidden {
-			if !df.hidden {
-				ret[df.name] = fm
-			}
-			continue
-		}
-
 		fm["srcField"] = srcType.Name() + "." + pair.srcStruct.List[pair.srcStruct.NameIndex[df.alias]].name
-
-		if df.tp.Kind() == reflect.Struct {
+		if df.tp.Kind() == reflect.Struct && !df.customConv && !df.param {
 
 			dt := dstType
 			sIndex := pair.srcStruct.NameIndex[df.alias]
@@ -895,6 +912,6 @@ func showTypeJson(srcType reflect.Type, dstType reflect.Type, options *Options) 
 		ret[df.name] = fm
 	}
 	return typeJson{
-		dstType.Name() + fmt.Sprintf("(hashcode:%d)", options.hash()): ret,
+		dstType.Name() + fmt.Sprintf(" (hash:%d)", options.hash()): ret,
 	}
 }
