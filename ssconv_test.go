@@ -536,6 +536,9 @@ func TestStructLocalCustomFunc(t *testing.T) {
 		Age:    2,
 	}
 	_ = Conv(src2, &dst2, nil, *new(ParamList))
+
+	debugOutput(ShowTypeJson(src2, dst2, nil))
+
 	expect2 := User1{
 		ID:     "yokel123",
 		Avatar: "hello",
@@ -547,5 +550,4 @@ func TestStructLocalCustomFunc(t *testing.T) {
 	if !cmp.Equal(expect, dst) {
 		t.Error()
 	}
-
 }

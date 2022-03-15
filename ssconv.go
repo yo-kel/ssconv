@@ -1,12 +1,14 @@
 package ssconv
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/mitchellh/hashstructure/v2"
 	"github.com/mohae/deepcopy"
 	"os"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -142,7 +144,6 @@ func (op *Options) split(s string) *Options {
 	}
 	res := new(Options)
 	res.DeepCopy = op.DeepCopy
-	res.DeepCopy = op.DeepCopy
 	return res
 }
 
@@ -155,8 +156,7 @@ func (op *Options) IsEmpty() bool {
 	return len(op.LocalRules) == 0 && op.DeepCopy == false
 }
 
-type ParamList struct {
-}
+type ParamList map[string]interface{}
 
 type convState struct {
 }
@@ -303,7 +303,7 @@ type field struct {
 	ignoreEmpty bool
 
 	param     bool
-	paramName string
+	paramName reflect.Value
 
 	customConv bool
 	converter  reflect.Value
@@ -409,7 +409,7 @@ func cachedStructField(t reflect.Type, options *Options) structField {
 						} else {
 							f.param = false
 						}
-						f.paramName = param
+						f.paramName = reflect.ValueOf(param)
 					}
 				}
 			}
@@ -522,7 +522,7 @@ func extractStructFieldFields(t reflect.Type, options *Options) structField {
 						hidden:      hidden,
 
 						param:     param,
-						paramName: paramName,
+						paramName: reflect.ValueOf(paramName),
 
 						customConv: customConv,
 						converter:  method,
@@ -578,6 +578,11 @@ func extractPairStructFieldFields(srcType reflect.Type, dstType reflect.Type, op
 		if f.hidden {
 			break
 		}
+
+		if f.customConv || f.param {
+			continue
+		}
+
 		index, exist := p.srcStruct.NameIndex[f.alias]
 		if !exist {
 			panic(fmt.Sprintf("field %s not exists", f.alias))
@@ -644,7 +649,7 @@ func newStructConverter(srcType reflect.Type, dstType reflect.Type, options *Opt
 			continue
 		}
 		_, exists := sc.options[df.alias]
-		if exists {
+		if exists { //TODO
 			continue
 		}
 
@@ -686,6 +691,23 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 			if firstRet != -1 {
 				dst.Set(ret[firstRet])
 			}
+			continue
+		}
+
+		//param convertor
+		if df.param {
+
+			v := list.MapIndex(df.paramName)
+			if df.ignoreEmpty && !v.IsValid() {
+				continue
+			}
+
+			dv := dst
+			for _, j := range df.index {
+				dv = dv.Field(j)
+			}
+
+			dv.Set(v)
 		}
 
 		// default convertor
@@ -707,14 +729,7 @@ func (s *structConverter) conv(c *convState, src reflect.Value, dst reflect.Valu
 		if df.ignoreEmpty && sv.IsZero() {
 			continue
 		}
-
-		if df.param {
-			//TODO
-		} else if df.customConv {
-			//TODO
-		} else {
-			newConv(sv.Type(), dv.Type(), s.options[df.alias])(c, sv, dv, list)
-		}
+		newConv(sv.Type(), dv.Type(), s.options[df.alias])(c, sv, dv, list)
 	}
 }
 
@@ -800,4 +815,86 @@ func newSliceConverter(srcType reflect.Type, dstType reflect.Type, options *Opti
 	}
 	sliceConv := sliceConverter{elemFunc: newConv(srcElem, dstElem, options)}
 	return sliceConv.conv
+}
+
+type typeJson map[string]interface{}
+
+func getFunctionName(i reflect.Value) string {
+	return runtime.FuncForPC(i.Pointer()).Name()
+}
+
+// ShowTypeJson return a string represent conversion property of given types and options in json,
+// used for debugging
+func ShowTypeJson(src, dst interface{}, options *Options) string {
+	js := showTypeJson(reflect.TypeOf(src), reflect.TypeOf(dst), options)
+	str, err := json.MarshalIndent(js, "", "    ")
+	if err != nil {
+		panic(err)
+	}
+	return string(str)
+}
+
+func showTypeJson(srcType reflect.Type, dstType reflect.Type, options *Options) typeJson {
+
+	ret := make(typeJson)
+
+	pair := extractPairStructFieldFields(srcType, dstType, options)
+
+	for i := 0; i < len(pair.dstStruct.List); i++ {
+		df := &pair.dstStruct.List[i]
+		var fm typeJson
+		fm = make(typeJson)
+		//fm["type"]=df.tp.Name()
+		if df.alias != df.name && df.alias != "" {
+			fm["alias"] = df.alias
+		}
+		if df.hidden {
+			fm["hidden"] = df.hidden
+		}
+		if df.ignoreEmpty {
+			fm["ignoreEmpty"] = df.ignoreEmpty
+		}
+		if df.param {
+			fm["param"] = df.paramName
+		}
+		if df.customConv {
+			fm["func"] = getFunctionName(df.converter) + " " + df.converter.Type().String()
+		}
+
+		if df.param || df.customConv || df.hidden {
+			if !df.hidden {
+				ret[df.name] = fm
+			}
+			continue
+		}
+
+		fm["srcField"] = srcType.Name() + "." + pair.srcStruct.List[pair.srcStruct.NameIndex[df.alias]].name
+
+		if df.tp.Kind() == reflect.Struct {
+
+			dt := dstType
+			sIndex := pair.srcStruct.NameIndex[df.alias]
+			//fmt.Println(i," ",sIndex[0])
+			sf := &pair.srcStruct.List[sIndex]
+			st := srcType
+
+			for _, j := range df.index {
+				dt = dt.Field(j).Type
+			}
+
+			for _, j := range sf.index {
+				st = st.Field(j).Type
+			}
+
+			if _, exist := ret["Subfield"]; !exist {
+				ret["Subfield"] = make([]typeJson, 0)
+			}
+			ret["Subfield"] = append(ret["Subfield"].([]typeJson),
+				showTypeJson(st, dt, options.split(df.alias).redirect(df.alias)))
+		}
+		ret[df.name] = fm
+	}
+	return typeJson{
+		dstType.Name() + fmt.Sprintf("(hashcode:%d)", options.hash()): ret,
+	}
 }
